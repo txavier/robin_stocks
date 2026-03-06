@@ -90,7 +90,7 @@ def splits_url(symbol):
 # account
 
 def phoenix_url():
-    return('https://phoenix.robinhood.com/accounts/unified')
+    return('https://bonfire.robinhood.com/accounts/unified')
 
 def positions_url(account_number=None):
     if account_number:
