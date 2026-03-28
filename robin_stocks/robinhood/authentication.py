@@ -30,7 +30,12 @@ def _validate_sherrif_id(device_token: str, workflow_id: str):
     print("Starting verification process...")
     pathfinder_url = "https://api.robinhood.com/pathfinder/user_machine/"
     machine_payload = {'device_id': device_token, 'flow': 'suv', 'input': {'workflow_id': workflow_id}}
+    print(f"DEBUG: pathfinder request device_id: {device_token}")
     machine_data = request_post(url=pathfinder_url, payload=machine_payload, json=True)
+    print(f"DEBUG: pathfinder response: {machine_data}")
+
+    if machine_data is None:
+        raise Exception("Pathfinder API returned no response (request_post returned None)")
 
     machine_id = _get_sherrif_id(machine_data)
     inquiries_url = f"https://api.robinhood.com/pathfinder/inquiries/{machine_id}/user_view/"
@@ -53,10 +58,11 @@ def _validate_sherrif_id(device_token: str, workflow_id: str):
             if challenge_type == "prompt":
                 print("Check robinhood app for device approvals method...")
                 prompt_url = f"https://api.robinhood.com/push/{challenge_id}/get_prompts_status/"
-                while True:
+                prompt_start = time.time()
+                while time.time() - prompt_start < 120:
                     time.sleep(5)
                     prompt_challenge_status = request_get(url=prompt_url)
-                    if prompt_challenge_status["challenge_status"] == "validated":
+                    if prompt_challenge_status and prompt_challenge_status.get("challenge_status") == "validated":
                         break
                 break
 
@@ -119,10 +125,18 @@ def _validate_sherrif_id(device_token: str, workflow_id: str):
 
 
 
-def login(username=None, password=None, expiresIn=86400, scope='internal', store_session=True, mfa_code=None, pickle_path="", pickle_name=""):
+def login(username=None, password=None, expiresIn=86400, scope='internal', store_session=True, mfa_code=None, pickle_path="", pickle_name="", device_token=None):
     """Handles the login process to Robinhood, including multi-factor authentication, session persistence, and verification handling."""
     print("Starting login process...")
-    device_token = generate_device_token()
+    if not device_token:
+        device_token = generate_device_token()
+    # Ensure device_token is UUID format (required by pathfinder API).
+    # Legacy 16-char tokens like "WNHMWLYXJEV5ROKP" won't work.
+    import re
+    if not re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', device_token, re.IGNORECASE):
+        print(f"Device token '{device_token}' is not UUID format — generating a proper UUID token.")
+        device_token = generate_device_token()
+    print(f"DEBUG: Using device_token: {device_token}")
     home_dir = os.path.expanduser("~")
     data_dir = os.path.join(home_dir, ".tokens")
 
@@ -182,6 +196,8 @@ def login(username=None, password=None, expiresIn=86400, scope='internal', store
                         "ERROR: There was an issue loading pickle file. Authentication may be expired - logging in normally.", file=get_output())
                     set_login_state(False)
                     update_session('Authorization', None)
+                    # Reset to the validated device_token — pickle may have overwritten with a stale one
+                    login_payload['device_token'] = device_token
         else:
             os.remove(pickle_path)
 
@@ -194,13 +210,14 @@ def login(username=None, password=None, expiresIn=86400, scope='internal', store
         login_payload['password'] = password
 
     data = request_post(url, login_payload)
+    print(f"DEBUG: login response: {data}")
 
     if data:
         try:
             if 'verification_workflow' in data:
                 print("Verification required, handling challenge...")
                 workflow_id = data['verification_workflow']['id']
-                _validate_sherrif_id(device_token, workflow_id)
+                _validate_sherrif_id(login_payload['device_token'], workflow_id)
 
                 # Reattempt login after verification
                 data = request_post(url, login_payload)
